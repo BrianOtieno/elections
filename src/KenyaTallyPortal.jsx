@@ -20,6 +20,11 @@ import {
   TrendingUp,
   Clock,
   Filter,
+  Play,
+  Pause,
+  Printer,
+  Layers,
+  ArrowLeft,
 } from "lucide-react";
 
 // ============================================================================
@@ -4395,17 +4400,20 @@ export default function App() {
 
   // Map Visualization & Filter State
   const [mapMode, setMapMode] = useState("PARTY"); // PARTY | MARGIN | REPORTING
+  const [mapLevel, setMapLevel] = useState("NATIONAL"); // NATIONAL | CONSTITUENCY_DRILLDOWN
   const [searchQuery, setSearchQuery] = useState("");
   const [regionFilter, setRegionFilter] = useState("ALL");
+  const [isAutoSimulating, setIsAutoSimulating] = useState(false);
 
-  // Authentication & Official Form 34A/34B Tally Submission State
+  // Authentication & Parallel Tally Submission State
   const [user, setUser] = useState(null); // { name, role, badgeId, station }
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showTallyDrawer, setShowTallyDrawer] = useState(false);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
 
   // Login Form Inputs
-  const [loginRole, setLoginRole] = useState("RETURNING_OFFICER");
-  const [loginId, setLoginId] = useState("IEBC-RO-2027-047");
+  const [loginRole, setLoginRole] = useState("TALLY_COORDINATOR");
+  const [loginId, setLoginId] = useState("PTC-COORD-2027-047");
   const [loginPin, setLoginPin] = useState("2027");
 
   // Tally Submission Form State (Matches exact 5 Presidential Candidates)
@@ -4425,7 +4433,7 @@ export default function App() {
     {
       id: 1,
       time: "18:36 EAT",
-      form: "Form 34B Verified",
+      form: "Parallel Sheet Verified",
       unit: "Kisumu Central, Kisumu",
       detail: "ODM leads with 62,800 votes (99.0% reporting)",
       party: "ODM",
@@ -4433,7 +4441,7 @@ export default function App() {
     {
       id: 2,
       time: "18:34 EAT",
-      form: "Form 34B Verified",
+      form: "Parallel Sheet Verified",
       unit: "Kikuyu, Kiambu",
       detail: "UDA leads with 78,400 votes (98.0% reporting)",
       party: "UDA",
@@ -4441,7 +4449,7 @@ export default function App() {
     {
       id: 3,
       time: "18:31 EAT",
-      form: "Form 34B Verified",
+      form: "Parallel Sheet Verified",
       unit: "Machakos Town, Machakos",
       detail: "WIPER leads with 54,200 votes (97.0% reporting)",
       party: "WIPER",
@@ -4449,12 +4457,62 @@ export default function App() {
     {
       id: 4,
       time: "18:28 EAT",
-      form: "Form 34A Batch",
+      form: "Field Agent Batch",
       unit: "Westlands, Nairobi",
-      detail: "142/148 polling streams transmitted",
+      detail: "142/148 polling center tallies logged",
       party: "ODM",
     },
   ]);
+
+  // Live Auto-Stream Simulation Effect
+  useEffect(() => {
+    if (!isAutoSimulating) return;
+    const interval = setInterval(() => {
+      const randomIdx = Math.floor(Math.random() * counties.length);
+      const target = counties[randomIdx];
+      if (!target) return;
+
+      const parties = ["UDA", "ODM", "JUBILEE", "WIPER", "DCP"];
+      const boostParty = parties[Math.floor(Math.random() * parties.length)];
+      const addedVotes = Math.floor(Math.random() * 1400) + 450;
+
+      setCounties((prev) =>
+        prev.map((c) => {
+          if (c.code !== target.code) return c;
+          return {
+            ...c,
+            reportingPct: Math.min(
+              100,
+              Number((c.reportingPct + 0.3).toFixed(1)),
+            ),
+            presVotes: {
+              ...c.presVotes,
+              [boostParty]: (c.presVotes[boostParty] || 0) + addedVotes,
+            },
+          };
+        }),
+      );
+
+      const now = new Date();
+      const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
+        now.getMinutes(),
+      ).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")} EAT`;
+
+      setLiveFeed((prev) => [
+        {
+          id: Date.now() + Math.random(),
+          time: timeStr,
+          form: "Parallel Feed",
+          unit: `${target.name} County`,
+          detail: `+${addedVotes.toLocaleString()} verified votes logged (${PARTIES[boostParty]?.short})`,
+          party: boostParty,
+        },
+        ...prev.slice(0, 9),
+      ]);
+    }, 3200);
+
+    return () => clearInterval(interval);
+  }, [isAutoSimulating, counties]);
 
   // Selected County Object
   const selectedCounty = useMemo(
@@ -4462,92 +4520,7 @@ export default function App() {
     [counties, selectedCountyCode],
   );
 
-  // Reset constituency selection when changing county
-  useEffect(() => {
-    setSelectedConstituency(null);
-  }, [selectedCountyCode]);
-
-  // ============================================================================
-  // NATIONAL AGGREGATES & CONSTITUTIONAL THRESHOLDS
-  // ============================================================================
-  const nationalStats = useMemo(() => {
-    let totalRegistered = 0;
-    let totalPresVotes = 0;
-    const presTotals = { UDA: 0, ODM: 0, JUBILEE: 0, WIPER: 0, DCP: 0 };
-    const pres25Counties = { UDA: 0, ODM: 0, JUBILEE: 0, WIPER: 0, DCP: 0 };
-    const countiesWon = {
-      UDA: 0,
-      ODM: 0,
-      JUBILEE: 0,
-      WIPER: 0,
-      DCP: 0,
-      DAP: 0,
-      IND: 0,
-    };
-    const mpSeats = {
-      UDA: 0,
-      ODM: 0,
-      JUBILEE: 0,
-      WIPER: 0,
-      DCP: 0,
-      DAP: 0,
-      IND: 0,
-    };
-    let totalConstituencies = 0;
-    let reportingSum = 0;
-
-    counties.forEach((county) => {
-      totalRegistered += county.registeredVoters;
-      reportingSum += county.reportingPct;
-
-      // Presidential vote aggregation + 25% in 24 counties rule
-      const countyPresTotal = Object.values(county.presVotes).reduce(
-        (a, b) => a + b,
-        0,
-      );
-      totalPresVotes += countyPresTotal;
-      Object.entries(county.presVotes).forEach(([party, v]) => {
-        presTotals[party] = (presTotals[party] || 0) + v;
-        if (countyPresTotal > 0 && v / countyPresTotal >= 0.25) {
-          pres25Counties[party] = (pres25Counties[party] || 0) + 1;
-        }
-      });
-
-      // Race-specific county/seat winners
-      const outcome = getCountyWinnerForRace(county, activeRace);
-      countiesWon[outcome.winnerParty] =
-        (countiesWon[outcome.winnerParty] || 0) + 1;
-
-      // MP constituencies count
-      county.constituencies.forEach((con) => {
-        totalConstituencies += 1;
-        mpSeats[con.winner] = (mpSeats[con.winner] || 0) + 1;
-      });
-    });
-
-    const avgReporting = (reportingSum / counties.length).toFixed(1);
-    const totalStations = 46229;
-    const reportedStations = Math.round(
-      (parseFloat(avgReporting) / 100) * totalStations,
-    );
-    const turnoutPct = ((totalPresVotes / totalRegistered) * 100).toFixed(1);
-
-    return {
-      totalRegistered,
-      totalPresVotes,
-      presTotals,
-      pres25Counties,
-      countiesWon,
-      mpSeats,
-      totalConstituencies,
-      avgReporting,
-      reportedStations,
-      totalStations,
-      turnoutPct,
-    };
-  }, [counties, activeRace]);
-
-  // Filtered counties for search / region highlight
+  // Matching Counties Set for Search & Region Filtering
   const matchingCountyCodes = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return new Set(
@@ -4555,37 +4528,118 @@ export default function App() {
         .filter((c) => {
           const matchesRegion =
             regionFilter === "ALL" || c.region === regionFilter;
-          const matchesText =
+          const matchesQuery =
             !q ||
             c.name.toLowerCase().includes(q) ||
-            c.code.includes(q) ||
-            c.constituencies.some((con) => con.name.toLowerCase().includes(q));
-          return matchesRegion && matchesText;
+            c.code.toLowerCase().includes(q) ||
+            c.region.toLowerCase().includes(q) ||
+            c.constituencies.some(
+              (con) =>
+                con.name.toLowerCase().includes(q) ||
+                con.mp.toLowerCase().includes(q),
+            );
+          return matchesRegion && matchesQuery;
         })
         .map((c) => c.code),
     );
   }, [counties, searchQuery, regionFilter]);
 
+  // National Scoreboard Aggregates across All 47 Counties
+  const nationalStats = useMemo(() => {
+    const presTotals = {};
+    const pres25Counties = {};
+    const countiesWon = {};
+    const mpSeats = {};
+
+    let totalPresVotes = 0;
+    let totalRegistered = 0;
+    let weightedReportingSum = 0;
+    let totalConstituencies = 0;
+
+    counties.forEach((county) => {
+      totalRegistered += county.registeredVoters || 0;
+      weightedReportingSum +=
+        (county.reportingPct || 0) * (county.registeredVoters || 1);
+      const weightDenomCounty = Object.values(county.presVotes || {}).reduce(
+        (a, b) => a + b,
+        0,
+      );
+
+      // Presidential aggregation & >=25% per-county constitutional threshold check
+      Object.entries(county.presVotes || {}).forEach(([partyKey, votes]) => {
+        presTotals[partyKey] = (presTotals[partyKey] || 0) + votes;
+        totalPresVotes += votes;
+        if (weightDenomCounty > 0 && votes / weightDenomCounty >= 0.25) {
+          pres25Counties[partyKey] = (pres25Counties[partyKey] || 0) + 1;
+        }
+      });
+
+      // County winner for active race
+      const raceOutcome = getCountyWinnerForRace(county, activeRace);
+      countiesWon[raceOutcome.winnerParty] =
+        (countiesWon[raceOutcome.winnerParty] || 0) + 1;
+
+      // Constituency / MP seat aggregation
+      (county.constituencies || []).forEach((con) => {
+        totalConstituencies += 1;
+        mpSeats[con.winner] = (mpSeats[con.winner] || 0) + 1;
+      });
+    });
+
+    const totalWeight = counties.reduce(
+      (acc, c) => acc + (c.registeredVoters || 1),
+      0,
+    );
+    const avgReporting =
+      totalWeight > 0
+        ? Number((weightedReportingSum / totalWeight).toFixed(1))
+        : 0;
+    const totalStations = 46229;
+    const reportedStations = Math.round((avgReporting / 100) * totalStations);
+    const turnoutPct =
+      totalRegistered > 0
+        ? Number(((totalPresVotes / totalRegistered) * 100).toFixed(1))
+        : 0;
+
+    return {
+      presTotals,
+      pres25Counties,
+      countiesWon,
+      mpSeats,
+      totalPresVotes,
+      totalConstituencies,
+      avgReporting,
+      totalStations,
+      reportedStations,
+      turnoutPct,
+    };
+  }, [counties, activeRace]);
+
+  // Reset constituency selection when changing county
+  useEffect(() => {
+    setSelectedConstituency(null);
+  }, [selectedCountyCode]);
+
   // ============================================================================
-  // HANDLERS: AUTH & LIVE FORM 34A/34B SUBMISSION
+  // HANDLERS: AUTH & PARALLEL TALLY SUBMISSION
   // ============================================================================
   const handleLoginSubmit = (e) => {
     e.preventDefault();
     const roleLabels = {
-      RETURNING_OFFICER: "IEBC Returning Officer",
-      PARTY_AGENT: "Chief Party Tally Agent",
-      MEDIA_OBSERVER: "Accredited Media Observer",
+      TALLY_COORDINATOR: "Regional Tally Coordinator",
+      PARTY_AGENT: "Coalition / Party Field Agent",
+      CITIZEN_OBSERVER: "Independent Citizen Observer",
     };
     setUser({
       name:
-        loginRole === "RETURNING_OFFICER"
-          ? "RO. David Kiprop"
+        loginRole === "TALLY_COORDINATOR"
+          ? "Coord. David Kiprop"
           : loginRole === "PARTY_AGENT"
             ? "Agent Grace Wanjiku"
             : "Observer Brian Omondi",
       role: roleLabels[loginRole],
       roleKey: loginRole,
-      badgeId: loginId || "IEBC-2027-VERIFIED",
+      badgeId: loginId || "PTC-2027-VERIFIED",
     });
     setShowLoginModal(false);
     setShowTallyDrawer(true);
@@ -4593,15 +4647,15 @@ export default function App() {
 
   const handleQuickDemoLogin = (roleKey) => {
     const profiles = {
-      RETURNING_OFFICER: {
-        name: "RO. Sarah Chebet",
-        role: "IEBC Returning Officer",
-        roleKey: "RETURNING_OFFICER",
-        badgeId: "IEBC-RO-001",
+      TALLY_COORDINATOR: {
+        name: "Brian Otieno",
+        role: "Regional Tally Coordinator",
+        roleKey: "TALLY_COORDINATOR",
+        badgeId: "PTC-COORD-001",
       },
       PARTY_AGENT: {
         name: "Agent Kevin Otieno",
-        role: "Chief Coalition Agent",
+        role: "Coalition Field Agent",
         roleKey: "PARTY_AGENT",
         badgeId: "AGT-2027-884",
       },
@@ -4671,8 +4725,8 @@ export default function App() {
         time: timeStr,
         form:
           tallyRace === "PRESIDENTIAL"
-            ? "Form 34B Updated"
-            : `Form 35B (${tallyRace})`,
+            ? "County Tally Updated"
+            : `Seat Tally (${tallyRace})`,
         unit: `${targetCounty.name} County`,
         detail: `Verified batch added (+${Object.values(tallyVotesInput)
           .reduce((a, b) => a + Number(b || 0), 0)
@@ -4684,9 +4738,43 @@ export default function App() {
 
     setSelectedCountyCode(tallyCountyCode);
     setTallySuccessMsg(
-      `Form 34B/35B tally committed for ${targetCounty.name} County!`,
+      `Parallel tally batch committed for ${targetCounty.name} County!`,
     );
     setTimeout(() => setTallySuccessMsg(""), 4000);
+  };
+
+  const handleDownloadCountyReport = () => {
+    const lines = [
+      `KENYA PARALLEL ELECTION TALLYING CENTER (INDEPENDENT CITIZEN & COALITION PORTAL)`,
+      `Generated: ${new Date().toLocaleString()}`,
+      `========================================================================`,
+      `COUNTY: ${selectedCounty.name.toUpperCase()} (Code: ${selectedCounty.code}) | Region: ${selectedCounty.region}`,
+      `Registered Voters: ${selectedCounty.registeredVoters.toLocaleString()} | Centers Reporting: ${selectedCounty.reportingPct}%`,
+      `Active Race View: ${activeRace}`,
+      `------------------------------------------------------------------------`,
+      `CANDIDATE / PARTY BREAKDOWN:`,
+      ...selectedOutcome.breakdown.map(
+        (b, i) =>
+          `${i + 1}. ${b.name} (${b.party}) - ${b.votes.toLocaleString()} (${b.pct.toFixed(2)}%)`,
+      ),
+      `------------------------------------------------------------------------`,
+      `CONSTITUENCY PARLIAMENTARY LEADERS (${selectedCounty.constituencies.length} Constituencies):`,
+      ...selectedCounty.constituencies.map(
+        (c) =>
+          `- ${c.name}: ${c.mp} (${c.winner}) - ${c.votes.toLocaleString()} votes vs ${c.runnerUp} (${c.runnerUpVotes.toLocaleString()})`,
+      ),
+      `========================================================================`,
+      `Disclaimer: Independent parallel tallying aggregation. Not an official electoral body broadcast.`,
+    ];
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${selectedCounty.name.toLowerCase().replace(/\s+/g, "-")}-parallel-tally.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // ============================================================================
@@ -4754,21 +4842,42 @@ export default function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-lg sm:text-xl font-black tracking-tight uppercase">
-                  KENYA <span className="text-amber-400">DECISION</span> 2027
+                  KENYA <span className="text-amber-400">PARALLEL</span> TALLY
+                  2027
                 </h1>
-                <span className="hidden md:inline-block text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                  National Tallying Center • Bomas
+                <span className="hidden md:inline-block text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-amber-300 border border-slate-700">
+                  Independent Parallel Tallying Center
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 hidden sm:block">
-                Independent Electoral &amp; Boundaries Commission (IEBC) Public
-                Results Portal
+                Independent Citizen, Media &amp; Coalition Parallel Vote
+                Tabulation (PVT) Portal
               </p>
             </div>
           </div>
 
           {/* Right Auth & Agent Controls */}
           <div className="flex items-center gap-2.5">
+            {/* Live Auto-Stream Simulation Toggle */}
+            <button
+              onClick={() => setIsAutoSimulating((v) => !v)}
+              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition ${
+                isAutoSimulating
+                  ? "bg-red-600/20 border-red-500 text-red-300"
+                  : "bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800"
+              }`}
+              title="Simulate incoming parallel field transmissions"
+            >
+              {isAutoSimulating ? (
+                <Pause className="w-3.5 h-3.5" />
+              ) : (
+                <Play className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden md:inline">
+                {isAutoSimulating ? "Streaming Live" : "Auto-Simulate"}
+              </span>
+            </button>
+
             {user ? (
               <div className="flex items-center gap-2">
                 <button
@@ -4776,7 +4885,7 @@ export default function App() {
                   className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-2 rounded-lg transition shadow"
                 >
                   <PlusCircle className="w-4 h-4" />
-                  <span className="hidden sm:inline">Submit Form 34A/34B</span>
+                  <span className="hidden sm:inline">Submit Tally Sheet</span>
                   <span className="sm:hidden">Tally Entry</span>
                 </button>
                 <div className="hidden lg:flex flex-col text-right px-2 border-l border-slate-800">
@@ -4804,7 +4913,7 @@ export default function App() {
                 className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs sm:text-sm px-3.5 py-2 rounded-lg transition shadow-md"
               >
                 <LogIn className="w-4 h-4" />
-                <span>Official / Agent Login</span>
+                <span>Coordinator / Agent Login</span>
               </button>
             )}
           </div>
@@ -4861,7 +4970,7 @@ export default function App() {
             <div className="hidden xl:flex items-center gap-4 text-xs text-slate-400">
               <span className="flex items-center gap-1.5">
                 <FileCheck className="w-3.5 h-3.5 text-emerald-400" />
-                KIEMS Transmission:{" "}
+                Parallel Center Feed:{" "}
                 <strong className="text-white">
                   {nationalStats.avgReporting}%
                 </strong>
@@ -5233,11 +5342,32 @@ export default function App() {
               <button
                 type="button"
                 onClick={() =>
+                  setMapLevel((lvl) =>
+                    lvl === "NATIONAL" ? "CONSTITUENCY_DRILLDOWN" : "NATIONAL",
+                  )
+                }
+                className={`px-2 py-1.5 rounded-lg font-extrabold text-[10px] flex items-center justify-center gap-1 transition ${
+                  mapLevel === "CONSTITUENCY_DRILLDOWN"
+                    ? "bg-amber-500 text-slate-950"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200"
+                }`}
+                title="Toggle County Constituency Map View"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>
+                  {mapLevel === "CONSTITUENCY_DRILLDOWN"
+                    ? "47 Counties"
+                    : "MP Map"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
                   setMapZoom((z) =>
                     Math.min(1.6, Number((z + 0.15).toFixed(2))),
                   )
                 }
-                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-black text-sm flex items-center justify-center transition"
+                className="w-full h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-black text-sm flex items-center justify-center transition"
                 title="Zoom In"
               >
                 +
@@ -5249,7 +5379,7 @@ export default function App() {
                     Math.max(0.85, Number((z - 0.15).toFixed(2))),
                   )
                 }
-                className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-black text-sm flex items-center justify-center transition"
+                className="w-full h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-black text-sm flex items-center justify-center transition"
                 title="Zoom Out"
               >
                 −
@@ -5258,7 +5388,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setMapZoom(1)}
-                  className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center transition"
+                  className="w-full h-7 rounded-lg bg-amber-500 text-slate-950 font-black text-[10px] flex items-center justify-center transition"
                   title="Reset Zoom"
                 >
                   1x
@@ -5266,174 +5396,247 @@ export default function App() {
               )}
             </div>
 
-            {/* Lake Victoria & Indian Ocean Labels */}
-            <svg
-              viewBox="0 0 600 720"
-              style={{ transform: `scale(${mapZoom})` }}
-              className="w-full h-full max-h-[640px] drop-shadow-2xl transition-transform duration-200"
-              role="img"
-              aria-label="Interactive Election Map of Kenya"
-            >
-              <defs>
-                <filter
-                  id="selectedGlow"
-                  x="-15%"
-                  y="-15%"
-                  width="130%"
-                  height="130%"
+            {mapLevel === "CONSTITUENCY_DRILLDOWN" ? (
+              /* CONSTITUENCY MAP VIEW FOR SELECTED COUNTY */
+              <div className="w-full h-full flex flex-col justify-between p-4 pt-14 pb-16 z-10">
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900/90 border border-slate-700 rounded-xl p-3">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                      Constituency Parliamentary Grid • County{" "}
+                      {selectedCounty.code}
+                    </span>
+                    <h3 className="text-base font-black text-white">
+                      {selectedCounty.name} County (
+                      {selectedCounty.constituencies.length} Constituencies)
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => setMapLevel("NATIONAL")}
+                    className="flex items-center gap-1.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg transition"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back to National Map</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 my-3 overflow-y-auto max-h-[380px] pr-1">
+                  {selectedCounty.constituencies.map((con) => {
+                    const p = PARTIES[con.winner] || PARTIES.IND;
+                    const isSelected = selectedConstituency?.name === con.name;
+                    const totalConVotes = con.votes + con.runnerUpVotes;
+                    const winPct =
+                      totalConVotes > 0
+                        ? ((con.votes / totalConVotes) * 100).toFixed(1)
+                        : "0.0";
+                    return (
+                      <button
+                        key={con.name}
+                        onClick={() => setSelectedConstituency(con)}
+                        style={{
+                          backgroundColor: p.color,
+                          color: con.winner === "UDA" ? "#0F172A" : "#FFFFFF",
+                        }}
+                        className={`p-3 rounded-xl text-left transition shadow-md flex flex-col justify-between min-h-[104px] border-2 ${
+                          isSelected
+                            ? "border-white scale-[1.02]"
+                            : "border-white/20 hover:border-white/80"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-1">
+                          <span className="text-xs font-black uppercase tracking-tight leading-tight">
+                            {con.name}
+                          </span>
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-black/25">
+                            {p.short}
+                          </span>
+                        </div>
+                        <div className="mt-2">
+                          <div className="text-[11px] font-extrabold truncate">
+                            {con.mp}
+                          </div>
+                          <div className="text-[10px] font-semibold opacity-90">
+                            {winPct}% ({con.votes.toLocaleString()} votes)
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              /* NATIONAL 47-COUNTY SVG MAP */
+              <svg
+                viewBox="0 0 600 720"
+                style={{ transform: `scale(${mapZoom})` }}
+                className="w-full h-full max-h-[640px] drop-shadow-2xl transition-transform duration-200"
+                role="img"
+                aria-label="Interactive Parallel Election Map of Kenya"
+              >
+                <defs>
+                  <filter
+                    id="selectedGlow"
+                    x="-15%"
+                    y="-15%"
+                    width="130%"
+                    height="130%"
+                  >
+                    <feDropShadow
+                      dx="0"
+                      dy="0"
+                      stdDeviation="3.5"
+                      floodColor="#FFFFFF"
+                      floodOpacity="0.85"
+                    />
+                  </filter>
+                  <clipPath id="kenyaMapClip">
+                    <path d={svgOutlinePath} />
+                  </clipPath>
+                </defs>
+
+                {/* Water bodies context */}
+                <path
+                  d="M 10,378 L 54,386 L 56,414 L 86,422 L 62,438 L 54,474 L 10,474 Z"
+                  fill="#0C4A6E"
+                  opacity="0.5"
+                />
+                <text
+                  x="22"
+                  y="435"
+                  fill="#38BDF8"
+                  fontSize="8"
+                  fontWeight="700"
+                  opacity="0.75"
+                  transform="rotate(-90 22,435)"
                 >
-                  <feDropShadow
-                    dx="0"
-                    dy="0"
-                    stdDeviation="3.5"
-                    floodColor="#FFFFFF"
-                    floodOpacity="0.85"
-                  />
-                </filter>
-                <clipPath id="kenyaMapClip">
-                  <path d={svgOutlinePath} />
-                </clipPath>
-              </defs>
+                  LAKE VICTORIA
+                </text>
 
-              {/* Water bodies context */}
-              <path
-                d="M 10,378 L 54,386 L 56,414 L 86,422 L 62,438 L 54,474 L 10,474 Z"
-                fill="#0C4A6E"
-                opacity="0.5"
-              />
-              <text
-                x="22"
-                y="435"
-                fill="#38BDF8"
-                fontSize="8"
-                fontWeight="700"
-                opacity="0.75"
-                transform="rotate(-90 22,435)"
-              >
-                LAKE VICTORIA
-              </text>
+                <text
+                  x="468"
+                  y="605"
+                  fill="#38BDF8"
+                  fontSize="9"
+                  fontWeight="700"
+                  opacity="0.7"
+                  transform="rotate(-48 468,605)"
+                >
+                  INDIAN OCEAN
+                </text>
 
-              <text
-                x="468"
-                y="605"
-                fill="#38BDF8"
-                fontSize="9"
-                fontWeight="700"
-                opacity="0.7"
-                transform="rotate(-48 468,605)"
-              >
-                INDIAN OCEAN
-              </text>
+                {/* Outer National Boundary Silhouette Base */}
+                <path d={svgOutlinePath} fill="#1E293B" />
 
-              {/* Outer National Boundary Silhouette Base */}
-              <path d={svgOutlinePath} fill="#1E293B" />
-
-              {/* Clipped County Layer so every outer coast & international border matches Kenya's true silhouette */}
-              <g clipPath="url(#kenyaMapClip)">
-                {/* Render All 47 Counties with Crisp High-Contrast Borders */}
-                {counties
-                  .filter(
-                    (c) =>
-                      c.code !== selectedCountyCode &&
-                      c.code !== hoveredCounty?.code,
-                  )
-                  .map((county) => {
-                    const { fill, fillOpacity } = getCountyFillProps(county);
-                    return (
-                      <g
-                        key={county.code}
-                        onClick={() => setSelectedCountyCode(county.code)}
-                        onMouseEnter={() => setHoveredCounty(county)}
-                        onMouseLeave={() => setHoveredCounty(null)}
-                        className="cursor-pointer"
-                      >
-                        <path
-                          d={county.path}
-                          fill={fill}
-                          fillOpacity={fillOpacity}
-                          stroke="#F8FAFC"
-                          strokeWidth="1.5"
-                          strokeLinejoin="round"
-                        />
-                        <text
-                          x={county.x}
-                          y={county.y}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="#FFFFFF"
-                          fontSize={county.name.length > 10 ? "6.2" : "7.2"}
-                          fontWeight="800"
-                          className="pointer-events-none"
-                          style={{ textShadow: "0px 1px 2px rgba(0,0,0,0.9)" }}
+                {/* Clipped County Layer so every outer coast & international border matches Kenya's true silhouette */}
+                <g clipPath="url(#kenyaMapClip)">
+                  {/* Render All 47 Counties with Crisp High-Contrast Borders */}
+                  {counties
+                    .filter(
+                      (c) =>
+                        c.code !== selectedCountyCode &&
+                        c.code !== hoveredCounty?.code,
+                    )
+                    .map((county) => {
+                      const { fill, fillOpacity } = getCountyFillProps(county);
+                      return (
+                        <g
+                          key={county.code}
+                          onClick={() => setSelectedCountyCode(county.code)}
+                          onMouseEnter={() => setHoveredCounty(county)}
+                          onMouseLeave={() => setHoveredCounty(null)}
+                          className="cursor-pointer"
                         >
-                          {county.name.length > 11
-                            ? county.code
-                            : county.name.toUpperCase()}
-                        </text>
-                      </g>
-                    );
-                  })}
+                          <path
+                            d={county.path}
+                            fill={fill}
+                            fillOpacity={fillOpacity}
+                            stroke="#F8FAFC"
+                            strokeWidth="1.5"
+                            strokeLinejoin="round"
+                          />
+                          <text
+                            x={county.x}
+                            y={county.y}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fill="#FFFFFF"
+                            fontSize={county.name.length > 10 ? "6.2" : "7.2"}
+                            fontWeight="800"
+                            className="pointer-events-none"
+                            style={{
+                              textShadow: "0px 1px 2px rgba(0,0,0,0.9)",
+                            }}
+                          >
+                            {county.name.length > 11
+                              ? county.code
+                              : county.name.toUpperCase()}
+                          </text>
+                        </g>
+                      );
+                    })}
 
-                {/* Render Hovered & Selected Counties on Top so their borders never clip */}
-                {counties
-                  .filter(
-                    (c) =>
-                      c.code === selectedCountyCode ||
-                      c.code === hoveredCounty?.code,
-                  )
-                  .map((county) => {
-                    const { fill, fillOpacity } = getCountyFillProps(county);
-                    const isSelected = county.code === selectedCountyCode;
-                    return (
-                      <g
-                        key={county.code}
-                        onClick={() => setSelectedCountyCode(county.code)}
-                        onMouseEnter={() => setHoveredCounty(county)}
-                        onMouseLeave={() => setHoveredCounty(null)}
-                        className="cursor-pointer"
-                        filter={isSelected ? "url(#selectedGlow)" : undefined}
-                      >
-                        <path
-                          d={county.path}
-                          fill={fill}
-                          fillOpacity={fillOpacity}
-                          stroke={isSelected ? "#FFFFFF" : "#FDE047"}
-                          strokeWidth={isSelected ? "3.2" : "2.4"}
-                          strokeLinejoin="round"
-                        />
-                        <text
-                          x={county.x}
-                          y={county.y}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="#FFFFFF"
-                          fontSize={county.name.length > 10 ? "6.5" : "7.5"}
-                          fontWeight="900"
-                          className="pointer-events-none"
-                          style={{ textShadow: "0px 1px 3px rgba(0,0,0,0.95)" }}
+                  {/* Render Hovered & Selected Counties on Top so their borders never clip */}
+                  {counties
+                    .filter(
+                      (c) =>
+                        c.code === selectedCountyCode ||
+                        c.code === hoveredCounty?.code,
+                    )
+                    .map((county) => {
+                      const { fill, fillOpacity } = getCountyFillProps(county);
+                      const isSelected = county.code === selectedCountyCode;
+                      return (
+                        <g
+                          key={county.code}
+                          onClick={() => setSelectedCountyCode(county.code)}
+                          onMouseEnter={() => setHoveredCounty(county)}
+                          onMouseLeave={() => setHoveredCounty(null)}
+                          className="cursor-pointer"
+                          filter={isSelected ? "url(#selectedGlow)" : undefined}
                         >
-                          {county.name.length > 11
-                            ? county.code
-                            : county.name.toUpperCase()}
-                        </text>
-                      </g>
-                    );
-                  })}
-              </g>
+                          <path
+                            d={county.path}
+                            fill={fill}
+                            fillOpacity={fillOpacity}
+                            stroke={isSelected ? "#FFFFFF" : "#FDE047"}
+                            strokeWidth={isSelected ? "3.2" : "2.4"}
+                            strokeLinejoin="round"
+                          />
+                          <text
+                            x={county.x}
+                            y={county.y}
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            fill="#FFFFFF"
+                            fontSize={county.name.length > 10 ? "6.5" : "7.5"}
+                            fontWeight="900"
+                            className="pointer-events-none"
+                            style={{
+                              textShadow: "0px 1px 3px rgba(0,0,0,0.95)",
+                            }}
+                          >
+                            {county.name.length > 11
+                              ? county.code
+                              : county.name.toUpperCase()}
+                          </text>
+                        </g>
+                      );
+                    })}
+                </g>
 
-              {/* Crisp Outer National Border Drawn on Top */}
-              <path
-                d={svgOutlinePath}
-                fill="none"
-                stroke="#FFFFFF"
-                strokeWidth="3"
-                strokeLinejoin="round"
-                className="pointer-events-none"
-              />
-            </svg>
+                {/* Crisp Outer National Border Drawn on Top */}
+                <path
+                  d={svgOutlinePath}
+                  fill="none"
+                  stroke="#FFFFFF"
+                  strokeWidth="3"
+                  strokeLinejoin="round"
+                  className="pointer-events-none"
+                />
+              </svg>
+            )}
 
             {/* Floating Broadcast Tooltip on Hover */}
-            {hoveredCounty && (
+            {hoveredCounty && mapLevel === "NATIONAL" && (
               <div
                 style={{
                   left: Math.min(mousePos.x + 14, 340),
@@ -5552,7 +5755,7 @@ export default function App() {
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
             {/* Header Banner colored by leading party */}
             <div
-              className="p-4 text-white flex items-center justify-between"
+              className="p-4 text-white flex items-center justify-between gap-3"
               style={{
                 backgroundColor:
                   PARTIES[selectedOutcome.winnerParty]?.color || "#0F172A",
@@ -5561,25 +5764,37 @@ export default function App() {
               }}
             >
               <div>
-                <div className="flex items-center gap-2 text-xs font-bold uppercase opacity-90">
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>
-                    County {selectedCounty.code} • {selectedCounty.region}{" "}
-                    Region
-                  </span>
-                </div>
-                <h2 className="text-2xl font-black tracking-tight mt-0.5">
+                <span className="text-[10px] font-black uppercase tracking-widest opacity-85">
+                  County {selectedCounty.code} • {selectedCounty.region}
+                </span>
+                <h2 className="text-xl font-black leading-tight">
                   {selectedCounty.name} County
                 </h2>
+                <p className="text-xs font-bold opacity-90 mt-0.5">
+                  Leading: {selectedOutcome.winnerName} (
+                  {PARTIES[selectedOutcome.winnerParty]?.short ||
+                    selectedOutcome.winnerParty}
+                  ) • +{selectedOutcome.marginPct.toFixed(1)}%
+                </p>
               </div>
-              <div className="text-right">
-                <div className="text-xs font-extrabold uppercase opacity-90">
-                  {selectedCounty.reportingPct}% Reporting
+              <div className="text-right flex flex-col items-end gap-1.5">
+                <div>
+                  <div className="text-xs font-extrabold uppercase opacity-90">
+                    {selectedCounty.reportingPct}% Reporting
+                  </div>
+                  <div className="text-xs font-semibold opacity-85">
+                    Reg. Voters:{" "}
+                    {selectedCounty.registeredVoters.toLocaleString()}
+                  </div>
                 </div>
-                <div className="text-xs font-semibold opacity-85">
-                  Reg. Voters:{" "}
-                  {selectedCounty.registeredVoters.toLocaleString()}
-                </div>
+                <button
+                  onClick={handleDownloadCountyReport}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-extrabold px-2.5 py-1 rounded-lg bg-black/20 hover:bg-black/30 transition"
+                  title="Download Parallel Tally Summary Sheet"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Export Tally Sheet</span>
+                </button>
               </div>
             </div>
 
@@ -5678,9 +5893,20 @@ export default function App() {
                     Constituencies in {selectedCounty.name} (
                     {selectedCounty.constituencies.length})
                   </h4>
-                  <span className="text-[11px] text-slate-500">
-                    Click constituency for MP tally
-                  </span>
+                  <button
+                    onClick={() =>
+                      setMapLevel((lvl) =>
+                        lvl === "CONSTITUENCY_DRILLDOWN"
+                          ? "NATIONAL"
+                          : "CONSTITUENCY_DRILLDOWN",
+                      )
+                    }
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 underline"
+                  >
+                    {mapLevel === "CONSTITUENCY_DRILLDOWN"
+                      ? "Show National Map"
+                      : "Open Constituency Map"}
+                  </button>
                 </div>
 
                 {/* Selected Constituency Detail Box */}
@@ -5772,17 +5998,17 @@ export default function App() {
             </div>
           </div>
 
-          {/* Live IEBC Form 34A / 34B Incoming Stream */}
+          {/* Live Parallel Tallying Center Incoming Stream */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <Radio className="w-4 h-4 text-red-600 animate-pulse" />
                 <h3 className="text-xs font-black uppercase tracking-wider text-slate-900">
-                  Live Form 34A / 34B Transmission Stream
+                  Live Parallel Tally Transmission Stream
                 </h3>
               </div>
               <span className="text-[10px] font-bold text-slate-500">
-                KIEMS REAL-TIME
+                PARALLEL PVT FEED
               </span>
             </div>
 
@@ -5835,10 +6061,11 @@ export default function App() {
                 <Shield className="w-6 h-6 text-amber-400" />
                 <div>
                   <h3 className="text-base font-black uppercase tracking-tight">
-                    IEBC &amp; Party Agent Portal
+                    Parallel Tally Agent &amp; Coordinator Portal
                   </h3>
                   <p className="text-xs text-slate-400">
-                    Sign in to verify &amp; transmit Form 34A/34B tallies
+                    Sign in to verify &amp; transmit parallel polling center
+                    tallies
                   </p>
                 </div>
               </div>
@@ -5860,35 +6087,35 @@ export default function App() {
                   onChange={(e) => setLoginRole(e.target.value)}
                   className="w-full px-3 py-2.5 text-sm font-semibold border border-slate-300 rounded-xl bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-900"
                 >
-                  <option value="RETURNING_OFFICER">
-                    IEBC Presiding / Returning Officer
+                  <option value="TALLY_COORDINATOR">
+                    Regional Parallel Tally Coordinator
                   </option>
                   <option value="PARTY_AGENT">
-                    Chief Political Party / Coalition Agent
+                    Political Party / Coalition Field Agent
                   </option>
-                  <option value="MEDIA_OBSERVER">
-                    Accredited Election Observer / Media
+                  <option value="CITIZEN_OBSERVER">
+                    Independent Citizen / Media Observer
                   </option>
                 </select>
               </div>
 
               <div>
                 <label className="block text-xs font-bold uppercase text-slate-700 mb-1.5">
-                  Accreditation Badge / Staff ID
+                  Agent / Coordinator ID
                 </label>
                 <input
                   type="text"
                   required
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
-                  placeholder="e.g., IEBC-RO-2027-047"
+                  placeholder="e.g., PTC-COORD-2027-047"
                   className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-bold uppercase text-slate-700 mb-1.5">
-                  KIEMS Security PIN
+                  Parallel Center Security PIN
                 </label>
                 <input
                   type="password"
@@ -5914,17 +6141,17 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => handleQuickDemoLogin("RETURNING_OFFICER")}
+                    onClick={() => handleQuickDemoLogin("TALLY_COORDINATOR")}
                     className="py-2 px-3 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold transition"
                   >
-                    Demo Returning Officer
+                    Demo Coordinator
                   </button>
                   <button
                     type="button"
                     onClick={() => handleQuickDemoLogin("PARTY_AGENT")}
                     className="py-2 px-3 rounded-lg bg-blue-100 hover:bg-blue-200 text-blue-900 text-xs font-bold transition"
                   >
-                    Demo Party Agent
+                    Demo Field Agent
                   </button>
                 </div>
               </div>
@@ -5944,7 +6171,7 @@ export default function App() {
                 {user.role} • {user.badgeId}
               </span>
               <h3 className="text-base font-black">
-                Transmit Verified Tally Batch
+                Transmit Parallel Tally Batch
               </h3>
             </div>
             <button
@@ -5968,7 +6195,7 @@ export default function App() {
 
             <div>
               <label className="block text-xs font-bold uppercase text-slate-700 mb-1">
-                Select County (Form 34B / 35B)
+                Select County
               </label>
               <select
                 value={tallyCountyCode}
@@ -5992,10 +6219,10 @@ export default function App() {
                 onChange={(e) => setTallyRace(e.target.value)}
                 className="w-full px-3 py-2 text-sm font-semibold border border-slate-300 rounded-xl bg-slate-50"
               >
-                <option value="PRESIDENTIAL">Presidential (Form 34B)</option>
-                <option value="GOVERNOR">County Governor (Form 35B)</option>
-                <option value="SENATE">County Senate (Form 35B)</option>
-                <option value="WOMAN_REP">County Woman Rep (Form 35B)</option>
+                <option value="PRESIDENTIAL">Presidential Tally</option>
+                <option value="GOVERNOR">County Governor Tally</option>
+                <option value="SENATE">County Senate Tally</option>
+                <option value="WOMAN_REP">County Woman Rep Tally</option>
               </select>
             </div>
 
